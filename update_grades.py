@@ -78,6 +78,22 @@ def normalize_for_comparison(value: str) -> str:
 def load_lookup_table(conn, table: str, column: str) -> dict:
     """Carga una tabla de lookup y retorna un diccionario normalizado -> id."""
     cur = conn.cursor()
+
+    # Caso especial para sub_product: buscar también por chemical_code
+    if table == "prices_assessment.sub_product":
+        cur.execute(f"SELECT id, {column}, chemical_code FROM {table}")
+        lookup = {}
+        for row in cur.fetchall():
+            uuid_val = str(row[0])
+            name = row[1]
+            chemical_code = row[2]
+            if name:
+                lookup[normalize_for_comparison(name)] = uuid_val
+            if chemical_code:
+                lookup[normalize_for_comparison(chemical_code)] = uuid_val
+        cur.close()
+        return lookup
+
     cur.execute(f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL")
     lookup = {}
     for row in cur.fetchall():
