@@ -209,44 +209,60 @@ def process_row(row, lookups: Dict, row_num: int) -> Tuple[Optional[dict], list]
     data["is_price_grade"] = True
     data["order"] = row_num
 
-    # Generar hash único
-    data["unique_sha256"] = generate_unique_hash(data)
-
     return data, errors
 
 
 def generate_insert_sql(records: list) -> str:
-    """Genera el SQL con INSERTs para los registros."""
+    """Genera el SQL con INSERTs múltiples agrupados por mercado."""
     if not records:
         return ""
 
+    # Agrupar registros por mercado
+    records_by_market = {}
+    for record in records:
+        market_name = record.get("market_name") or "Sin Mercado"
+        if market_name not in records_by_market:
+            records_by_market[market_name] = []
+        records_by_market[market_name].append(record)
+
     lines = ["-- INSERT para tabla prices_assessment.grades"]
-    lines.append(f"-- Total de registros: {len(records)}\n")
+    lines.append(f"-- Total de registros: {len(records)}")
+    lines.append(f"-- Agrupados por {len(records_by_market)} mercados\n")
 
-    for idx, record in enumerate(records):
-        # Construir columnas y valores
-        columns = ["id"]
-        values = ["gen_random_uuid()"]
+    # Determinar columnas (usar el primer registro como referencia)
+    # "order" es keyword en PostgreSQL, debe ir entre comillas dobles
+    first_record = records[0]
+    columns = ["id"] + [f'"{col}"' if col == "order" else col for col in first_record.keys()]
 
-        for col, val in record.items():
-            columns.append(col)
-            if val is None:
-                values.append("NULL")
-            elif isinstance(val, bool):
-                values.append("TRUE" if val else "FALSE")
-            elif col.endswith("_at") and val:  # Fechas
-                values.append(f"'{val}'::date")
-            else:
-                escaped = escape_sql_string(str(val))
-                values.append(f"'{escaped}'")
+    # Generar INSERTs por mercado
+    for market_name in sorted(records_by_market.keys()):
+        market_records = records_by_market[market_name]
 
-        # Agregar created_at
-        columns.append("created_at")
-        values.append("NOW()")
-
-        lines.append(f"-- Registro {idx + 1}: {record.get('internal_code', 'N/A')}")
+        lines.append(f"-- ============================================================")
+        lines.append(f"-- Mercado: {market_name} ({len(market_records)} registros)")
+        lines.append(f"-- ============================================================")
         lines.append(f"INSERT INTO prices_assessment.grades ({', '.join(columns)})")
-        lines.append(f"VALUES ({', '.join(values)});")
+        lines.append("VALUES")
+
+        value_lines = []
+        for record in market_records:
+            values = ["gen_random_uuid()"]
+
+            for col in first_record.keys():
+                val = record.get(col)
+                if val is None:
+                    values.append("NULL")
+                elif isinstance(val, bool):
+                    values.append("TRUE" if val else "FALSE")
+                elif col.endswith("_at") and val:  # Fechas
+                    values.append(f"'{val}'::date")
+                else:
+                    escaped = escape_sql_string(str(val))
+                    values.append(f"'{escaped}'")
+
+            value_lines.append(f"    ({', '.join(values)})")
+
+        lines.append(",\n".join(value_lines) + ";")
         lines.append("")
 
     return "\n".join(lines)
@@ -276,9 +292,43 @@ def main():
 
     valid_records = []
     rows_with_errors = []
+    skipped_with_id = 0
+    skipped_bmi_price = 0
+    skipped_no_code = 0
+    skipped_duplicate_code = 0
+    seen_codes = set()
+    duplicate_codes_detail = []
 
     for idx, row in df.iterrows():
         row_num = idx + 1
+
+        # Ignorar filas que ya tienen ID (ya existen en la BD)
+        existing_id = get_cell_value(row, "ID")
+        if existing_id:
+            skipped_with_id += 1
+            continue
+
+        # Ignorar filas con Price Category = "BMI Price" (se actualizan, no se crean)
+        price_category = get_cell_value(row, "Price Category")
+        if price_category and price_category.lower() == "bmi price":
+            skipped_bmi_price += 1
+            continue
+
+        # Ignorar filas sin código interno
+        internal_code = get_cell_value(row, "Code")
+        if not internal_code:
+            skipped_no_code += 1
+            continue
+
+        # Ignorar filas con código interno duplicado (mantener primera ocurrencia)
+        if internal_code in seen_codes:
+            skipped_duplicate_code += 1
+            market = get_cell_value(row, "Market")
+            product = get_cell_value(row, "Product")
+            duplicate_codes_detail.append((row_num, internal_code, market, product))
+            continue
+        seen_codes.add(internal_code)
+
         data, errors = process_row(row, lookups, row_num)
 
         if errors:
@@ -289,8 +339,19 @@ def main():
     conn.close()
 
     # Resumen
-    print(f"\n✅ Registros válidos: {len(valid_records)}")
+    print(f"\n⏭️  Registros omitidos (ya tienen ID): {skipped_with_id}")
+    print(f"⏭️  Registros omitidos (BMI Price - para UPDATE): {skipped_bmi_price}")
+    print(f"⏭️  Registros omitidos (sin código interno): {skipped_no_code}")
+    print(f"⏭️  Registros omitidos (código duplicado): {skipped_duplicate_code}")
+    print(f"✅ Registros válidos para INSERT: {len(valid_records)}")
     print(f"❌ Registros con errores: {len(rows_with_errors)}")
+
+    if duplicate_codes_detail:
+        print("\nCódigos duplicados omitidos (se mantuvo primera ocurrencia):")
+        for row_num, code, market, product in duplicate_codes_detail[:10]:
+            print(f"   Fila {row_num}: {code} ({market} / {product})")
+        if len(duplicate_codes_detail) > 10:
+            print(f"   ... y {len(duplicate_codes_detail) - 10} más")
 
     if rows_with_errors:
         print("\nPrimeros 10 registros con errores:")

@@ -90,12 +90,12 @@ def get_db2_connection():
 
 
 def get_db_values(conn, table: str, columns: list, schema: str = "prices_assessment") -> Set[str]:
-    """Obtiene todos los valores únicos de múltiples columnas en una tabla (case insensitive)."""
+    """Obtiene todos los valores únicos de múltiples columnas en una tabla (normalizados para comparación)."""
     cur = conn.cursor()
     values = set()
     for column in columns:
-        cur.execute(f"SELECT DISTINCT LOWER({column}) FROM {schema}.{table} WHERE {column} IS NOT NULL")
-        values.update(row[0] for row in cur.fetchall())
+        cur.execute(f"SELECT DISTINCT {column} FROM {schema}.{table} WHERE {column} IS NOT NULL")
+        values.update(normalize_for_comparison(row[0]) for row in cur.fetchall() if row[0])
     cur.close()
     return values
 
@@ -104,12 +104,12 @@ def get_db2_values_with_ids(conn, schema: str, table: str, columns: list, code_c
     """
     Obtiene valores de una tabla en BD2 con sus IDs.
     Si code_column está especificado, también captura ese valor.
-    Retorna: (valores_lower, mapeo_lower_a_(id, nombre_original, code_o_None))
+    Retorna: (valores_normalizados, mapeo_normalizado_a_(id, nombre_original, code_o_None))
     """
     cur = conn.cursor()
 
-    values_lower = set()
-    lower_to_id_name = {}
+    values_normalized = set()
+    normalized_to_id_name = {}
 
     # Determinar si necesitamos el code
     if code_column:
@@ -120,10 +120,10 @@ def get_db2_values_with_ids(conn, schema: str, table: str, columns: list, code_c
             original_name = row[1]
             code_val = row[2]
             if original_name:
-                val_lower = original_name.lower()
-                values_lower.add(val_lower)
-                if val_lower not in lower_to_id_name:
-                    lower_to_id_name[val_lower] = (uuid_val, original_name, code_val)
+                val_normalized = normalize_for_comparison(original_name)
+                values_normalized.add(val_normalized)
+                if val_normalized not in normalized_to_id_name:
+                    normalized_to_id_name[val_normalized] = (uuid_val, original_name, code_val)
         # También buscar por code
         cur.execute(f"SELECT id, name, {code_column} FROM {schema}.{table} WHERE {code_column} IS NOT NULL")
         for row in cur.fetchall():
@@ -131,10 +131,10 @@ def get_db2_values_with_ids(conn, schema: str, table: str, columns: list, code_c
             original_name = row[1]
             code_val = row[2]
             if code_val:
-                val_lower = code_val.lower()
-                values_lower.add(val_lower)
-                if val_lower not in lower_to_id_name:
-                    lower_to_id_name[val_lower] = (uuid_val, original_name, code_val)
+                val_normalized = normalize_for_comparison(code_val)
+                values_normalized.add(val_normalized)
+                if val_normalized not in normalized_to_id_name:
+                    normalized_to_id_name[val_normalized] = (uuid_val, original_name, code_val)
     else:
         for column in columns:
             cur.execute(f"SELECT id, {column} FROM {schema}.{table} WHERE {column} IS NOT NULL")
@@ -142,27 +142,27 @@ def get_db2_values_with_ids(conn, schema: str, table: str, columns: list, code_c
                 uuid_val = str(row[0])
                 original_value = row[1]
                 if original_value:
-                    val_lower = original_value.lower()
-                    values_lower.add(val_lower)
-                    if val_lower not in lower_to_id_name:
-                        lower_to_id_name[val_lower] = (uuid_val, original_value, None)
+                    val_normalized = normalize_for_comparison(original_value)
+                    values_normalized.add(val_normalized)
+                    if val_normalized not in normalized_to_id_name:
+                        normalized_to_id_name[val_normalized] = (uuid_val, original_value, None)
 
     cur.close()
-    return values_lower, lower_to_id_name
+    return values_normalized, normalized_to_id_name
 
 
 def get_excel_values(df: pd.DataFrame, column: str) -> Tuple[Set[str], Dict[str, str]]:
     """
     Obtiene todos los valores únicos de una columna del Excel.
-    Retorna: (valores_normalizados_lower, mapeo_lower_a_original)
+    Retorna: (valores_normalizados, mapeo_normalizado_a_original)
     """
     if column not in df.columns:
         return set(), {}
     values = df[column].dropna().unique()
     original_values = {str(v).strip() for v in values if str(v).strip()}
-    # Mapeo de valor en minúsculas -> valor original
-    lower_to_original = {v.lower(): v for v in original_values}
-    return set(lower_to_original.keys()), lower_to_original
+    # Mapeo de valor normalizado -> valor original
+    normalized_to_original = {normalize_for_comparison(v): v for v in original_values}
+    return set(normalized_to_original.keys()), normalized_to_original
 
 
 def validate_column(
@@ -192,6 +192,14 @@ def slugify(value: str) -> str:
     slug = re.sub(r'-+', '-', slug)
     slug = slug.strip('-')
     return slug
+
+
+def normalize_for_comparison(value: str) -> str:
+    """Normaliza un string para comparación (elimina guiones y espacios extras)."""
+    import re
+    normalized = value.lower().strip()
+    normalized = re.sub(r'[-\s]+', ' ', normalized)  # Guiones y espacios -> espacio único
+    return normalized
 
 
 def generate_insert_sql(table: str, column: str, values: Set[str], schema: str = "prices_assessment") -> str:
@@ -439,8 +447,12 @@ def main():
             can_insert_lower = not_in_db1_lower & db2_values_lower
             cannot_insert_lower = not_in_db1_lower - db2_values_lower
 
-            # Preparar INSERTs con IDs de DB2 y valores no encontrados
-            inserts = {v: db2_lower_to_id_name[v] for v in can_insert_lower}
+            # Preparar INSERTs con IDs de DB2 pero nombres del Excel
+            inserts = {}
+            for v in can_insert_lower:
+                uuid_val, db2_name, code_val = db2_lower_to_id_name[v]
+                excel_name = lower_to_original.get(v, db2_name)  # Usar nombre del Excel
+                inserts[v] = (uuid_val, excel_name, code_val)
             not_found = {lower_to_original.get(v, v) for v in cannot_insert_lower}
             db2_inserts[excel_col] = {"config": config, "inserts": inserts, "not_found": not_found}
 
