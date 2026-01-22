@@ -173,7 +173,17 @@ def process_row(row, lookups: Dict, row_num: int) -> Tuple[Optional[dict], list]
     # Campos directos
     for excel_col, grades_col in EXCEL_TO_GRADES_MAPPING.items():
         if grades_col in ("is_sustainable", "is_iosco_assured", "is_public", "is_active", "is_spot"):
-            data[grades_col] = get_bool_value(row, excel_col)
+            val = get_cell_value(row, excel_col)
+            if val is None:
+                # Valores por defecto cuando la celda está vacía
+                if grades_col == "is_active":
+                    data[grades_col] = True
+                elif grades_col == "is_public":
+                    data[grades_col] = False
+                else:
+                    data[grades_col] = False
+            else:
+                data[grades_col] = get_bool_value(row, excel_col)
         else:
             data[grades_col] = get_cell_value(row, excel_col)
 
@@ -203,6 +213,15 @@ def process_row(row, lookups: Dict, row_num: int) -> Tuple[Optional[dict], list]
             data[id_col] = uuid_val
             if name_col:
                 data[name_col] = original_name
+
+    # Frequency por defecto: 'Monthly' si está vacío
+    if data.get("frequency_id") is None:
+        frequency_lookup = lookups.get("Frequency", {})
+        monthly_result = frequency_lookup.get("monthly")
+        if monthly_result:
+            uuid_val, original_name = monthly_result
+            data["frequency_id"] = uuid_val
+            data["frequency_name"] = original_name
 
     # Valores por defecto
     data["has_only_price_mid"] = False

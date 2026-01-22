@@ -67,7 +67,6 @@ def get_db_counts(conn) -> dict:
         FROM prices_assessment.grades g
         JOIN primary_data.market m ON g.market_id = m.id
         JOIN prices_assessment.price_category pc ON g.price_category_id = pc.id
-        WHERE g.is_active = true
         GROUP BY m.name, pc.name
         ORDER BY m.name, pc.name
     ''')
