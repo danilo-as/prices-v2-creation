@@ -115,7 +115,7 @@ def load_all_lookups(conn) -> dict:
 
 def main():
     # Leer archivo Excel
-    excel_path = "docs/Prices 2.0 Data Structure.xlsx"
+    excel_path = "docs/Prices 2.0 Data Structure OLD.xlsx"
     print(f"Leyendo archivo: {excel_path}")
     df = pd.read_excel(excel_path, sheet_name="Sheet1")
     print(f"Total de filas en Excel: {len(df)}\n")

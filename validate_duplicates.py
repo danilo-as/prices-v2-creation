@@ -87,7 +87,7 @@ def build_unique_key(row) -> tuple:
 
 def main():
     # Leer archivo Excel
-    excel_path = "docs/Prices 2.0 Data Structure.xlsx"
+    excel_path = "docs/Prices 2.0 Data Structure OLD.xlsx"
     print(f"Reading file: {excel_path}")
     df = pd.read_excel(excel_path, sheet_name="Sheet1")
     print(f"Total rows in Excel: {len(df)}\n")

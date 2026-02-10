@@ -81,7 +81,7 @@ def get_db_counts(conn) -> dict:
 
 
 def main():
-    excel_path = "docs/Prices 2.0 Data Structure.xlsx"
+    excel_path = "docs/Prices 2.0 Data Structure OLD.xlsx"
 
     # Lista para almacenar las líneas del reporte
     lines = []

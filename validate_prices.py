@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script para validar los valores del archivo Excel 'Prices 2.0 Data Structure.xlsx'
+Script para validar los valores del archivo Excel 'Prices 2.0 Data Structure OLD.xlsx'
 contra los valores existentes en la base de datos PostgreSQL.
 Genera archivos SQL con INSERTs para valores faltantes.
 """
@@ -392,7 +392,7 @@ def save_sql_files(results: Dict[str, Dict], db2_data: Dict[str, Dict] = None) -
 
 def main():
     # Leer archivo Excel
-    excel_path = "docs/Prices 2.0 Data Structure.xlsx"
+    excel_path = "docs/REPM grades.xlsx"
     print(f"Leyendo archivo: {excel_path}")
     df = pd.read_excel(excel_path, sheet_name="Sheet1")
     print(f"Total de filas en Excel: {len(df)}\n")

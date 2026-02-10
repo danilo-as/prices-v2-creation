@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
 Script para crear registros de grades faltantes.
-Compara los códigos del Excel 'Prices 2.0 Data Structure.xlsx' contra los que ya existen
+Compara los códigos del Excel 'Prices 2.0 Data Structure OLD.xlsx' contra los que ya existen
 en el archivo 'ids_and_internal_codes_in_DB.csv' y genera INSERTs para los faltantes.
 """
 
+import uuid
+import json
 import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
@@ -45,7 +47,7 @@ EXCEL_TO_GRADES_MAPPING = {
     "Full Name": "full_name",
     "Short Name (40 char max)": "short_name",
     "Spec": "specification",
-    "Grade": "grade",
+    "Grade": "grade_name",
     "Assessment Launched": "assessment_launched_at",
     "Last Assessed": "last_assessed_at",
     "Sustainable": "is_sustainable",
@@ -76,6 +78,25 @@ FK_MAPPING = {
     "UOM": ("unit_of_measure_id", "unit_of_measure_name"),
     "Frequency": ("frequency_id", "frequency_name"),
     "Default Currency": ("default_currency_id", None),
+}
+
+
+CONFIG_FK_MAPPING = {
+    "product_id": ("productId", "productName", "product_name"),
+    "sub_product_id": ("subProductId", "subProductName", "sub_product_name"),
+    "capacity_id": ("capacityId", "capacityName", "capacity_name"),
+    "cell_format_id": ("cellFormatId", "cellFormatName", "cell_format_name"),
+    "feedstock_id": ("feedstockId", "feedstockName", "feedstock_name"),
+    "purity_id": ("purityId", "purityName", "purity_name"),
+    "thickness_id": ("thicknessId", "thicknessName", "thickness_name"),
+    "mesh_size_id": ("meshSizeId", "meshSizeName", "mesh_size_name"),
+    "service_id": ("serviceId", "serviceName", "service_name"),
+    "incoterm_id": ("incotermId", "incotermName", "incoterm_name"),
+    "region_id": ("regionId", "regionName", "region_name"),
+    "country_id": ("countryId", "countryName", "country_name"),
+    "trade_type_id": ("tradeTypeId", "tradeTypeName", "trade_type_name"),
+    "price_type_id": ("priceTypeId", "priceTypeName", "price_type_name"),
+    "unit_of_measure_id": ("unitOfMeasureId", "unitOfMeasureName", "unit_of_measure_name"),
 }
 
 
@@ -125,6 +146,17 @@ def load_all_lookups(conn) -> Dict[str, Dict[str, Tuple[str, str]]]:
         )
         print(f"   Cargado {excel_col}: {len(lookups[excel_col])} valores")
     return lookups
+
+
+def load_product_chemical_codes(conn) -> Dict[str, Optional[str]]:
+    """Loads product_id -> chemical_code mapping."""
+    cur = conn.cursor()
+    cur.execute("SELECT id, chemical_code FROM prices_assessment.product WHERE chemical_code IS NOT NULL")
+    mapping = {}
+    for row in cur.fetchall():
+        mapping[str(row[0])] = row[1]
+    cur.close()
+    return mapping
 
 
 def get_cell_value(row, column: str) -> Optional[str]:
@@ -221,10 +253,26 @@ def process_row(row, lookups: Dict, row_num: int) -> Tuple[Optional[dict], list]
     return data, errors
 
 
-def generate_insert_sql(records: list) -> str:
+def build_dw_configuration(record, product_chemical_codes):
+    config = {}
+    for record_key, (id_key, name_key, record_name_field) in CONFIG_FK_MAPPING.items():
+        config[id_key] = record.get(record_key)
+        config[name_key] = record.get(record_name_field)
+    config["productAlias"] = None
+    config["productChemicalCode"] = product_chemical_codes.get(record.get("product_id"))
+    config["grade"] = record.get("grade_name")
+    return config
+
+
+def generate_insert_sql(records: list, uuids: list) -> str:
     """Genera el SQL con INSERTs múltiples agrupados por mercado."""
     if not records:
         return ""
+
+    # Crear mapeo record -> uuid
+    record_uuid_map = {}
+    for i, record in enumerate(records):
+        record_uuid_map[id(record)] = uuids[i]
 
     # Agrupar registros por mercado
     records_by_market = {}
@@ -234,7 +282,7 @@ def generate_insert_sql(records: list) -> str:
             records_by_market[market_name] = []
         records_by_market[market_name].append(record)
 
-    lines = ["-- INSERT para tabla prices_assessment.grades (GRADES FALTANTES)"]
+    lines = ["-- INSERT para tabla prices_assessment.price_definitions (GRADES FALTANTES)"]
     lines.append(f"-- Total de registros: {len(records)}")
     lines.append(f"-- Agrupados por {len(records_by_market)} mercados")
     lines.append("-- Estos registros existen en el Excel pero NO en la BD\n")
@@ -250,12 +298,13 @@ def generate_insert_sql(records: list) -> str:
         lines.append(f"-- ============================================================")
         lines.append(f"-- Mercado: {market_name} ({len(market_records)} registros)")
         lines.append(f"-- ============================================================")
-        lines.append(f"INSERT INTO prices_assessment.grades ({', '.join(columns)})")
+        lines.append(f"INSERT INTO prices_assessment.price_definitions ({', '.join(columns)})")
         lines.append("VALUES")
 
         value_lines = []
         for record in market_records:
-            values = ["gen_random_uuid()"]
+            record_uuid = record_uuid_map[id(record)]
+            values = [f"'{record_uuid}'"]
 
             for col in first_record.keys():
                 val = record.get(col)
@@ -277,9 +326,94 @@ def generate_insert_sql(records: list) -> str:
     return "\n".join(lines)
 
 
+def generate_dw_insert_sql(records: list, uuids: list, product_chemical_codes: dict) -> str:
+    """Genera el SQL con INSERTs para prices.grades (datawarehouse)."""
+    if not records:
+        return ""
+
+    # Crear mapeo record -> uuid
+    record_uuid_map = {}
+    for i, record in enumerate(records):
+        record_uuid_map[id(record)] = uuids[i]
+
+    # Agrupar registros por mercado
+    records_by_market = {}
+    for record in records:
+        market_name = record.get("market_name") or "Sin Mercado"
+        if market_name not in records_by_market:
+            records_by_market[market_name] = []
+        records_by_market[market_name].append(record)
+
+    lines = ["-- INSERT para tabla prices.grades (DATAWAREHOUSE)"]
+    lines.append(f"-- Total de registros: {len(records)}")
+    lines.append(f"-- Agrupados por {len(records_by_market)} mercados")
+    lines.append("-- Estos registros existen en el Excel pero NO en la BD\n")
+
+    dw_columns = [
+        "id", "name", "market_id", "product_id", "configuration",
+        "is_spot", "is_sustainable", "frequency_id", "frequency_name",
+        "is_active", "is_iosco_assured", "is_public", "default_currency_id",
+        "product_name", "price_category_id", "price_category_name",
+        "internal_code", "short_name", "can_be_deleted"
+    ]
+
+    for market_name in sorted(records_by_market.keys()):
+        market_records = records_by_market[market_name]
+
+        lines.append(f"-- ============================================================")
+        lines.append(f"-- Mercado: {market_name} ({len(market_records)} registros)")
+        lines.append(f"-- ============================================================")
+        lines.append(f"INSERT INTO prices.grades ({', '.join(dw_columns)})")
+        lines.append("VALUES")
+
+        value_lines = []
+        for record in market_records:
+            record_uuid = record_uuid_map[id(record)]
+            config = build_dw_configuration(record, product_chemical_codes)
+            config_json = json.dumps(config, ensure_ascii=False)
+            config_json_escaped = config_json.replace("'", "''")
+
+            values = []
+            for col in dw_columns:
+                if col == "id":
+                    values.append(f"'{record_uuid}'")
+                elif col == "name":
+                    val = record.get("full_name")
+                    values.append(f"'{escape_sql_string(str(val))}'" if val is not None else "NULL")
+                elif col == "configuration":
+                    values.append(f"'{config_json_escaped}'::jsonb")
+                elif col == "can_be_deleted":
+                    values.append("FALSE")
+                elif col in ("is_spot", "is_sustainable", "is_active", "is_iosco_assured", "is_public"):
+                    val = record.get(col)
+                    if val is None:
+                        values.append("FALSE")
+                    else:
+                        values.append("TRUE" if val else "FALSE")
+                elif col in ("default_currency_id", "internal_code", "short_name"):
+                    val = record.get(col)
+                    if val is None:
+                        values.append("NULL")
+                    else:
+                        values.append(f"'{escape_sql_string(str(val))}'")
+                else:
+                    val = record.get(col)
+                    if val is None:
+                        values.append("NULL")
+                    else:
+                        values.append(f"'{escape_sql_string(str(val))}'")
+
+            value_lines.append(f"    ({', '.join(values)})")
+
+        lines.append(",\n".join(value_lines) + ";")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def main():
     # Rutas de archivos
-    excel_path = "docs/Prices 2.0 Data Structure.xlsx"
+    excel_path = "docs/REPM grades.xlsx"
     csv_path = "docs/ids_and_internal_codes_in_DB.csv"
 
     # Cargar códigos existentes del CSV
@@ -347,6 +481,9 @@ def main():
         else:
             valid_records.append(data)
 
+    # Cargar chemical codes antes de cerrar la conexión
+    product_chemical_codes = load_product_chemical_codes(conn)
+
     conn.close()
 
     # Resumen
@@ -374,7 +511,10 @@ def main():
     # Generar archivo SQL
     if valid_records:
         SQLS_DIR.mkdir(exist_ok=True)
-        sql_content = generate_insert_sql(valid_records)
+        uuids = [str(uuid.uuid4()) for _ in valid_records]
+        sql_primary = generate_insert_sql(valid_records, uuids)
+        sql_dw = generate_dw_insert_sql(valid_records, uuids, product_chemical_codes)
+        sql_content = sql_primary + "\n\n" + sql_dw
         file_path = SQLS_DIR / "insert_missing_grades.sql"
         file_path.write_text(sql_content)
         print(f"\nArchivo SQL generado: {file_path}")

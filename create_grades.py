@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script para crear registros de grades a partir del archivo Excel 'Prices 2.0 Data Structure.xlsx'.
+Script para crear registros de grades a partir del archivo Excel 'Prices 2.0 Data Structure OLD.xlsx'.
 Genera archivos SQL con INSERTs para la tabla grades.
 """
 
@@ -289,7 +289,7 @@ def generate_insert_sql(records: list) -> str:
 
 def main():
     # Leer archivo Excel
-    excel_path = "docs/Prices 2.0 Data Structure.xlsx"
+    excel_path = "docs/REPM grades.xlsx"
     print(f"Leyendo archivo: {excel_path}")
     df = pd.read_excel(excel_path, sheet_name="Sheet1")
     print(f"Total de filas en Excel: {len(df)}\n")
