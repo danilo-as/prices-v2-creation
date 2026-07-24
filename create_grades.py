@@ -189,6 +189,39 @@ def generate_grade_id(row_data: dict) -> str:
     return str(uuid.uuid5(GRADE_UUID_NAMESPACE, key))
 
 
+# Orden EXACTO de los IDs con que la BD genera la columna price_definitions.unique_sha256.
+# Debe mantenerse idéntico a la generation_expression de la tabla, o la detección
+# de colisiones dejará de coincidir con el UNIQUE (unique_sha256) de la BD.
+SHA256_REQUIRED_IDS = ("frequency_id", "market_id", "price_category_id", "product_id")
+SHA256_OPTIONAL_IDS = (
+    "capacity_id", "thickness_id", "cell_format_id", "country_id", "mesh_size_id",
+    "purity_id", "incoterm_id", "region_id", "service_id", "sub_product_id",
+    "feedstock_id", "trade_type_id", "grade_id", "unit_of_measure_id",
+    "price_type_id", "sulphur_id",
+)
+
+
+def compute_db_unique_sha256(data: dict) -> Optional[str]:
+    """
+    Reproduce en Python la columna generada prices_assessment.price_definitions.unique_sha256.
+
+    La BD calcula la unicidad de un price_definition sobre la COMBINACIÓN DIMENSIONAL
+    (los *_id), NO sobre internal_code. Dos filas con distinto código pero mismas
+    dimensiones colisionan en el UNIQUE (unique_sha256) e impiden el INSERT.
+
+    Retorna None si falta algún ID requerido: en ese caso la BD genera NULL (los
+    NULL no participan del UNIQUE), por lo que la fila no puede colisionar por hash.
+    """
+    if any(data.get(k) is None for k in SHA256_REQUIRED_IDS):
+        return None
+
+    parts = [str(data[k]) for k in SHA256_REQUIRED_IDS]
+    parts += [str(data[k]) if data.get(k) is not None else "" for k in SHA256_OPTIONAL_IDS]
+    is_sustainable = "true" if data.get("is_sustainable") else "false"
+    raw = "-".join(parts) + "-" + is_sustainable
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 def process_row(row, lookups: Dict, row_num: int) -> Tuple[Optional[dict], list]:
     """
     Procesa una fila del Excel y retorna los datos para el INSERT.
@@ -342,8 +375,11 @@ def main():
     skipped_bmi_price = 0
     skipped_no_code = 0
     skipped_duplicate_code = 0
+    skipped_duplicate_dimension = 0
     seen_codes = set()
+    seen_hashes = {}
     duplicate_codes_detail = []
+    duplicate_dimension_detail = []
 
     for idx, row in df.iterrows():
         row_num = idx + 1
@@ -379,8 +415,23 @@ def main():
 
         if errors:
             rows_with_errors.append((row_num, data.get("internal_code"), errors))
-        else:
-            valid_records.append(data)
+            continue
+
+        # Ignorar filas cuya combinación dimensional ya fue vista (mantener primera
+        # ocurrencia). La BD deriva el UNIQUE (unique_sha256) de los *_id, no del
+        # código: dos códigos distintos con mismas dimensiones violan el constraint.
+        dim_hash = compute_db_unique_sha256(data)
+        if dim_hash is not None and dim_hash in seen_hashes:
+            skipped_duplicate_dimension += 1
+            first_code = seen_hashes[dim_hash]
+            duplicate_dimension_detail.append(
+                (row_num, data.get("internal_code"), first_code, dim_hash)
+            )
+            continue
+        if dim_hash is not None:
+            seen_hashes[dim_hash] = data.get("internal_code")
+
+        valid_records.append(data)
 
     conn.close()
 
@@ -389,6 +440,7 @@ def main():
     print(f"⏭️  Registros omitidos (BMI Price - para UPDATE): {skipped_bmi_price}")
     print(f"⏭️  Registros omitidos (sin código interno): {skipped_no_code}")
     print(f"⏭️  Registros omitidos (código duplicado): {skipped_duplicate_code}")
+    print(f"⏭️  Registros omitidos (combinación dimensional duplicada): {skipped_duplicate_dimension}")
     print(f"✅ Registros válidos para INSERT: {len(valid_records)}")
     print(f"❌ Registros con errores: {len(rows_with_errors)}")
 
@@ -398,6 +450,16 @@ def main():
             print(f"   Fila {row_num}: {code} ({market} / {product})")
         if len(duplicate_codes_detail) > 10:
             print(f"   ... y {len(duplicate_codes_detail) - 10} más")
+
+    if duplicate_dimension_detail:
+        print(
+            "\n⚠️  Combinaciones dimensionales duplicadas omitidas "
+            "(chocarían con UNIQUE unique_sha256 en la BD):"
+        )
+        for row_num, code, first_code, dim_hash in duplicate_dimension_detail[:10]:
+            print(f"   Fila {row_num}: {code} → misma combinación que '{first_code}' (sha256={dim_hash[:12]}…)")
+        if len(duplicate_dimension_detail) > 10:
+            print(f"   ... y {len(duplicate_dimension_detail) - 10} más")
 
     if rows_with_errors:
         print("\nPrimeros 10 registros con errores:")
