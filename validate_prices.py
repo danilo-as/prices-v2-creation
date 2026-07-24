@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import os
 from typing import Set, Dict, List, Tuple
 from pathlib import Path
+from config import EXCEL_FILE
 
 load_dotenv()
 
@@ -57,6 +58,7 @@ COLUMN_TO_TABLE_MAPPING = {
     "Purity": {"db": "db1", "schema": "prices_assessment", "table": "purity", "columns": ["name"]},
     "Thickness": {"db": "db1", "schema": "prices_assessment", "table": "thickness", "columns": ["name"]},
     "Mesh size": {"db": "db1", "schema": "prices_assessment", "table": "mesh_size", "columns": ["size"]},
+    "Grade": {"db": "db1", "schema": "prices_assessment", "table": "grade", "columns": ["name"]},
     "Service": {"db": "db1", "schema": "prices_assessment", "table": "service", "columns": ["name"]},
     "Incoterm": {"db": "db1", "schema": "prices_assessment", "table": "incoterm", "columns": ["name", "code"]},
     "Region": {"db": "db1", "schema": "prices_assessment", "table": "region", "columns": ["name"]},
@@ -392,7 +394,7 @@ def save_sql_files(results: Dict[str, Dict], db2_data: Dict[str, Dict] = None) -
 
 def main():
     # Leer archivo Excel
-    excel_path = "docs/REPM grades.xlsx"
+    excel_path = EXCEL_FILE
     print(f"Leyendo archivo: {excel_path}")
     df = pd.read_excel(excel_path, sheet_name="Sheet1")
     print(f"Total de filas en Excel: {len(df)}\n")

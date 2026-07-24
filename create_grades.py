@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Script para crear registros de grades a partir del archivo Excel 'Prices 2.0 Data Structure OLD.xlsx'.
-Genera archivos SQL con INSERTs para la tabla grades.
+Script para crear registros de price_definitions a partir del archivo Excel 'Prices 2.0 Data Structure OLD.xlsx'.
+Genera archivos SQL con INSERTs para la tabla price_definitions.
 """
 
 import pandas as pd
@@ -11,10 +11,17 @@ import os
 from typing import Dict, Optional, Tuple
 from pathlib import Path
 import hashlib
+import uuid
+from config import EXCEL_FILE
 
 load_dotenv()
 
 SQLS_DIR = Path("sqls")
+
+# Namespace fijo para generar UUIDs determinísticos (uuid5) de cada grade.
+# Mantener este valor constante: garantiza que el mismo internal_code produzca
+# el mismo id en todos los ambientes (dev, staging, prod).
+GRADE_UUID_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
 
 # Mapeo de columnas del Excel a tablas de lookup
 # schema: esquema de la BD, table: nombre de la tabla, columns: columnas donde buscar (case insensitive)
@@ -29,6 +36,7 @@ LOOKUP_TABLES = {
     "Purity": {"schema": "prices_assessment", "table": "purity", "columns": ["name"]},
     "Thickness": {"schema": "prices_assessment", "table": "thickness", "columns": ["name"]},
     "Mesh size": {"schema": "prices_assessment", "table": "mesh_size", "columns": ["size"]},
+    "Grade": {"schema": "prices_assessment", "table": "grade", "columns": ["name"]},
     "Service": {"schema": "prices_assessment", "table": "service", "columns": ["name"]},
     "Incoterm": {"schema": "prices_assessment", "table": "incoterm", "columns": ["name", "code"]},
     "Region": {"schema": "prices_assessment", "table": "region", "columns": ["name"]},
@@ -40,13 +48,12 @@ LOOKUP_TABLES = {
     "Default Currency": {"schema": "primary_data", "table": "currency", "columns": ["iso_code", "name"]},
 }
 
-# Mapeo de columnas del Excel a columnas de la tabla grades
+# Mapeo de columnas del Excel a columnas de la tabla price_definitions
 EXCEL_TO_GRADES_MAPPING = {
     "Code": "internal_code",
     "Full Name": "full_name",
     "Short Name (40 char max)": "short_name",
     "Spec": "specification",
-    "Grade": "grade",
     "Assessment Launched": "assessment_launched_at",
     "Last Assessed": "last_assessed_at",
     "Sustainable": "is_sustainable",
@@ -56,7 +63,7 @@ EXCEL_TO_GRADES_MAPPING = {
     "isSpot": "is_spot",
 }
 
-# Mapeo de columnas FK del Excel a columnas de grades (id y name)
+# Mapeo de columnas FK del Excel a columnas de price_definitions (id y name)
 FK_MAPPING = {
     "Price Category": ("price_category_id", "price_category_name"),
     "Market": ("market_id", "market_name"),
@@ -68,6 +75,7 @@ FK_MAPPING = {
     "Purity": ("purity_id", "purity_name"),
     "Thickness": ("thickness_id", "thickness_name"),
     "Mesh size": ("mesh_size_id", "mesh_size_name"),
+    "Grade": ("grade_id", "grade_name"),
     "Service": ("service_id", "service_name"),
     "Incoterm": ("incoterm_id", "incoterm_name"),
     "Region": ("region_id", "region_name"),
@@ -76,7 +84,7 @@ FK_MAPPING = {
     "Price Type": ("price_type_id", "price_type_name"),
     "UOM": ("unit_of_measure_id", "unit_of_measure_name"),
     "Frequency": ("frequency_id", "frequency_name"),
-    "Default Currency": ("default_currency_id", None),  # Solo ID, no tiene _name en grades
+    "Default Currency": ("default_currency_id", None),  # Solo ID, no tiene _name en price_definitions
 }
 
 
@@ -162,6 +170,25 @@ def generate_unique_hash(row_data: dict) -> str:
     return hashlib.sha256(hash_input.encode()).hexdigest()
 
 
+def generate_grade_id(row_data: dict) -> str:
+    """
+    Genera un UUID determinístico (uuid5) para el grade a partir de su clave natural.
+
+    Usar internal_code como base garantiza que el mismo grade obtenga el mismo id
+    en todos los ambientes. Si no hay internal_code, cae a los mismos campos clave
+    que usa el hash único.
+    """
+    internal_code = row_data.get("internal_code")
+    if internal_code:
+        key = internal_code
+    else:
+        key = "|".join(
+            str(row_data.get(f, ""))
+            for f in ("market_id", "product_id", "price_category_id")
+        )
+    return str(uuid.uuid5(GRADE_UUID_NAMESPACE, key))
+
+
 def process_row(row, lookups: Dict, row_num: int) -> Tuple[Optional[dict], list]:
     """
     Procesa una fila del Excel y retorna los datos para el INSERT.
@@ -244,7 +271,7 @@ def generate_insert_sql(records: list) -> str:
             records_by_market[market_name] = []
         records_by_market[market_name].append(record)
 
-    lines = ["-- INSERT para tabla prices_assessment.grades"]
+    lines = ["-- INSERT para tabla prices_assessment.price_definitions"]
     lines.append(f"-- Total de registros: {len(records)}")
     lines.append(f"-- Agrupados por {len(records_by_market)} mercados\n")
 
@@ -260,12 +287,12 @@ def generate_insert_sql(records: list) -> str:
         lines.append(f"-- ============================================================")
         lines.append(f"-- Mercado: {market_name} ({len(market_records)} registros)")
         lines.append(f"-- ============================================================")
-        lines.append(f"INSERT INTO prices_assessment.grades ({', '.join(columns)})")
+        lines.append(f"INSERT INTO prices_assessment.price_definitions ({', '.join(columns)})")
         lines.append("VALUES")
 
         value_lines = []
         for record in market_records:
-            values = ["gen_random_uuid()"]
+            values = [f"'{generate_grade_id(record)}'"]
 
             for col in first_record.keys():
                 val = record.get(col)
@@ -289,7 +316,7 @@ def generate_insert_sql(records: list) -> str:
 
 def main():
     # Leer archivo Excel
-    excel_path = "docs/REPM grades.xlsx"
+    excel_path = EXCEL_FILE
     print(f"Leyendo archivo: {excel_path}")
     df = pd.read_excel(excel_path, sheet_name="Sheet1")
     print(f"Total de filas en Excel: {len(df)}\n")
